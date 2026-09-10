@@ -39,6 +39,7 @@ Any down / unhealthy / errored?
 - AWS IAM (least-privilege `AmazonEC2ReadOnlyAccess`)
 - `smtplib` (email alerts)
 - `python-dotenv` (local credential management)
+- `paramiko` (planned — SSH-based log file access)
 - `pytest` + `unittest.mock` (testing)
 
 ## Setup
@@ -56,16 +57,17 @@ python main.py
 
 ## Testing
 
-This project is tested entirely with mocked AWS/email calls — no real AWS credentials or live infrastructure required to run the test suite.
+This project is tested entirely with mocked AWS/email/file calls — no real AWS credentials, SSH access, or live infrastructure required to run the test suite.
 
 ```bash
 pip install pytest
-pytest tests/test_aws.py -v
+pytest -v
 ```
 
-**Coverage:**
-- `get_instance_status()` — all four possible outcomes: down, healthy, unhealthy, error
-- `check_all_instances()` — correct sorting/looping logic across multiple instances
+**Coverage (13 tests across 3 files):**
+- `tests/test_ec2_monitoring.py` — `get_instance_status()` (down/healthy/unhealthy/error) and `check_all_instances()` sorting logic
+- `tests/test_log_monitoring.py` — error-line filtering, checkpoint read/write (found, default, missing-file), log reading, and full orchestration via `check_all_logs()`
+- `tests/test_utils.py` — shared tagged-instance lookup
 
 ## Deployment (AWS Lambda)
 
@@ -80,8 +82,23 @@ pytest tests/test_aws.py -v
 - Small architectural decisions (like separating "check one instance" from "check all instances") ripple through a codebase — adding a third status category required updates across three functions, not just one.
 - Real client requirements are rarely fully specified upfront; the "5-minute vs. hourly" interval decision changed once actual Lambda cost data was considered instead of an assumption.
 
+## Feature 2: Application Log Monitoring
+
+The client's application logs (`/var/log/myapp/app.log` on each instance) could contain real errors — like failed payment transactions — that never show up as an EC2 health issue. Marcus only found out about one such incident when a customer emailed him.
+
+**What it does:** periodically reads each tagged instance's log file, checks for new lines since the last check, filters for anything containing "ERROR" (case-insensitive), and includes any findings in the same alert email as the EC2 health checks.
+
+**Key design decisions:**
+- **Checkpoint-based reading (byte offset, stored in `checkpoints.json`)** instead of re-reading the whole file every time — the log file is never rotated or archived, so it only grows; re-scanning it fully on every check would get slower over time and re-report the same old errors repeatedly.
+- **One shared checkpoint file, not one per instance** — simpler to manage as the number of monitored instances grows, at the cost of a small, documented risk: if this file is lost or corrupted, the next run re-scans each log from the beginning. Considered a database (SQLite) for this, but chose the simpler file-based approach since the risk is low-severity and easily recoverable — a database would be a reasonable future upgrade, not a requirement for the MVP.
+- **One combined `alert_data` dictionary** passed into `send_alert_email()`, instead of an ever-growing list of function parameters — keeps the alerting function stable as more alert categories (like this one) get added.
+- **Shared `get_tagged_instance_ids()` helper** (`devops/utils.py`), extracted from Feature 1's instance-discovery logic, so both features stay in sync with the same tagging convention without duplicating boto3 filtering code.
+
+**Known limitation:** log access is designed around SSH (not yet connected to a live instance — built and fully tested against a local file and mocked SSH behavior). Real SSH credentials from the client are still pending.
+
 ## Future Improvements
 
-- Log analysis (parsing application error logs, not just infrastructure state)
+- Real SSH/paramiko connection for live log fetching (currently reads a local file for development/testing)
 - API/website uptime monitoring (confirming the app responds to users, not just that the server is running)
 - Configurable alert thresholds (e.g., only alert if down for more than N minutes, to reduce noise from brief blips)
+- Checkpoint storage upgrade (e.g., SQLite) if the JSON file's corruption risk becomes an actual issue at scale

@@ -1,4 +1,5 @@
 import boto3
+from devops.utils import get_tagged_instance_ids
 
 ec2 = boto3.client('ec2')
 
@@ -26,19 +27,14 @@ def check_all_instances():
     down_instances = []
     unhealthy_instances = []
     instance_errors = []
-    response = ec2.describe_instances(
-        Filters=[{"Name":"tag:monitor", "Values":["true"]}]
-    )
-
-    for reservation in response['Reservations']:
-        for instance in reservation['Instances']:
-            instance_id = instance['InstanceId']
-            status = get_instance_status(instance_id)
-            if status == "down":
-                down_instances.append(instance_id)
-            elif status== "unhealthy":
-                unhealthy_instances.append(instance_id) 
-            elif status == "error":
-                instance_errors.append(instance_id)
-                print(f"Error checking instance {instance_id}.")
+    instance_ids = get_tagged_instance_ids()
+    for instance_id in instance_ids:
+        status = get_instance_status(instance_id)
+        if status == "down":
+            down_instances.append(instance_id)
+        elif status == "unhealthy":
+            unhealthy_instances.append(instance_id)
+        elif status == "error":
+            instance_errors.append(instance_id)
+            print(f"Error checking instance {instance_id}.")
     return down_instances, unhealthy_instances, instance_errors

@@ -1,11 +1,19 @@
-from devops.aws import check_all_instances
+from devops.ec2_monitoring import check_all_instances
 from devops.alerts import send_alert_email
+from devops.log_monitoring import check_all_logs
 from dotenv import load_dotenv
 load_dotenv()
 
 def main():
     down_instances, unhealthy_instances, instance_errors = check_all_instances()
-    send_alert_email(down_instances, unhealthy_instances, instance_errors) 
+    all_log_errors, all_error_message = check_all_logs()
+    alert_data = {
+        "down": down_instances,
+        "unhealthy": unhealthy_instances,
+        "instance_errors": instance_errors,
+        "log_errors": all_log_errors
+    }
+    send_alert_email(alert_data)
 
 if __name__ == "__main__":
     main()

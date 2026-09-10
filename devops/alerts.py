@@ -2,22 +2,25 @@ import smtplib
 import os
 from email.mime.text import MIMEText
 
-def send_alert_email(down_instances, unhealthy_instances, instance_errors):
+def send_alert_email(alert_data):
     # sends ONE email if there's anything to report, does nothing if all clear
-    if not down_instances and not unhealthy_instances and not instance_errors:
+    if not alert_data.get("down") and not alert_data.get("unhealthy") and not alert_data.get("instance_errors") and not alert_data.get("log_errors"):
         return  # nothing to alert about
     
     subject_parts = []
     presub = ""
     
-    if down_instances:
-        subject_parts.append(f"{len(down_instances)} instance(s) down")
-    if unhealthy_instances:
-        subject_parts.append(f"{len(unhealthy_instances)} instance(s) unhealthy")
-    if instance_errors:
-        subject_parts.append(f"{len(instance_errors)} instance(s) with errors")
+    if alert_data.get("down"):
+        subject_parts.append(f"{len(alert_data.get('down'))} instance(s) down")
+    if alert_data.get("unhealthy"):
+        subject_parts.append(f"{len(alert_data.get('unhealthy'))} instance(s) unhealthy")
+    if alert_data.get("instance_errors"):
+        subject_parts.append(f"{len(alert_data.get('instance_errors'))} instance(s) with errors")
+    if alert_data.get("log_errors"):
+        error_count = sum(len(errors) for errors in alert_data.get("log_errors").values())
+        subject_parts.append(f"{error_count} log error(s)")
 
-    if down_instances:
+    if alert_data.get("down"):
         presub = "ALERT: "
     else:
         presub = "Warning: "
@@ -26,16 +29,20 @@ def send_alert_email(down_instances, unhealthy_instances, instance_errors):
 
 
     body_lines = []
-    if down_instances:
+    if alert_data.get("down"):
         body_lines.append("Down instances:")
-        body_lines.extend(down_instances)
-    if unhealthy_instances:
-        body_lines.append("Unhealthy instances:")
-        body_lines.extend(unhealthy_instances)
-    if instance_errors:
+        body_lines.extend(alert_data.get("down"))
+    if alert_data.get("unhealthy"):
+        body_lines.append("Unhealthy:")
+        body_lines.extend(alert_data.get("unhealthy"))
+    if alert_data.get("instance_errors"):
         body_lines.append("Instances with errors:")
-        body_lines.extend(instance_errors)
-
+        body_lines.extend(alert_data.get("instance_errors"))
+    if alert_data.get("log_errors"):
+        body_lines.append("Log errors:")
+        for instance_id, error_lines in alert_data.get("log_errors").items():
+            body_lines.append(f" {instance_id}:")
+            body_lines.extend(error_lines)
 
     msg = MIMEText("\n".join(body_lines))
     msg["Subject"] = subject
