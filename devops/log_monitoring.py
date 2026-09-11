@@ -58,7 +58,7 @@ def read_new_log_lines(instance_ip, checkpoint_position):
 
 def check_all_logs():
     all_error_lines = {}
-    all_error_message ={}
+    connection_errors ={}
     instance_ids = get_tagged_instance_ids()
     for instance_id in instance_ids:
         instance_ip = get_instance_ip(instance_id)
@@ -71,11 +71,11 @@ def check_all_logs():
                 all_error_lines[instance_id] = error_lines
 
             if error_message:
-                all_error_message[instance_id] = error_message
+                connection_errors[instance_id] = error_message
     
             save_checkpoint(instance_id, new_position)
 
         else:
-            all_error_message[instance_id] ="cant get ip address"
+            connection_errors[instance_id] ="cant get ip address"
 
-    return all_error_lines, all_error_message
+    return all_error_lines, connection_errors

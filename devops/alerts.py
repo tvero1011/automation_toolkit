@@ -4,7 +4,7 @@ from email.mime.text import MIMEText
 
 def send_alert_email(alert_data):
     # sends ONE email if there's anything to report, does nothing if all clear
-    if not alert_data.get("down") and not alert_data.get("unhealthy") and not alert_data.get("instance_errors") and not alert_data.get("log_errors"):
+    if not alert_data.get("down") and not alert_data.get("unhealthy") and not alert_data.get("instance_errors") and not alert_data.get("log_errors") and not alert_data.get("api_errors") and not alert_data.get("connection_errors"):
         return  # nothing to alert about
     
     subject_parts = []
@@ -19,6 +19,12 @@ def send_alert_email(alert_data):
     if alert_data.get("log_errors"):
         error_count = sum(len(errors) for errors in alert_data.get("log_errors").values())
         subject_parts.append(f"{error_count} log error(s)")
+    if alert_data.get("api_errors"):
+        error_count = sum(len(errors) for errors in alert_data.get("api_errors").values())
+        subject_parts.append(f"{error_count} API error(s)")
+    if alert_data.get("connection_errors"):
+        error_count = sum(len(errors) for errors in alert_data.get("connection_errors").values())
+        subject_parts.append(f"{error_count} connection error(s)")
 
     if alert_data.get("down"):
         presub = "ALERT: "
@@ -43,6 +49,16 @@ def send_alert_email(alert_data):
         for instance_id, error_lines in alert_data.get("log_errors").items():
             body_lines.append(f" {instance_id}:")
             body_lines.extend(error_lines)
+    if alert_data.get("api_errors"):
+        body_lines.append("API errors:")
+        for api_name, error in alert_data.get("api_errors").items():
+            body_lines.append(f" {api_name}:")
+            body_lines.extend(error)
+    if alert_data.get("connection_errors"):
+        body_lines.append("Connection errors:")
+        for api_name, error in alert_data.get("connection_errors").items():
+            body_lines.append(f" {api_name}:")
+            body_lines.extend(error)
 
     msg = MIMEText("\n".join(body_lines))
     msg["Subject"] = subject
