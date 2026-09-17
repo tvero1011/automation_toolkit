@@ -1,6 +1,8 @@
 # DevOps Automation Toolkit
 
-A serverless AWS automation tool that monitors infrastructure and application health, and sends automatic email alerts when something needs attention — replacing manual, reactive server checking.
+A small AWS automation tool I built to practice real-world DevOps/cloud skills. It checks EC2 health, reads application logs over SSH, checks API endpoints, and audits S3 buckets — then sends one email alert if anything needs attention, and saves a report of the results.
+
+I built this by simulating real client requests (not from a tutorial), one feature at a time, learning the Python/AWS concepts I needed as each feature actually required them.
 
 ## Architecture
 
@@ -10,115 +12,189 @@ EventBridge (every 5 min)
    AWS Lambda
         ↓
 Check tagged EC2 instances (state + CloudWatch status)
-Check each instance's application log over SSH (new errors since last check)
+Check each instance's application log over SSH/SFTP (new errors since last check)
+Check business-critical API endpoints (availability + response time)
+Audit S3 buckets (public access, encryption, lifecycle policy, stale objects)
         ↓
-Any down / unhealthy / errored / new log errors / unreachable instances?
+Anything wrong?
         ↓
-   Yes → send one alert email (severity-based subject)
+   Yes → send one alert email + save a report (JSON/CSV)
    No  → do nothing
 ```
+
+Can also be run manually from the command line with flags to check just one thing at a time (see CLI section below).
 
 ---
 
 ## Feature 1: EC2 Health Check & Alert
 
-### The Problem
-A small e-commerce startup running on AWS had no automated way to know when a server went down. Outages were discovered reactively — often through customer complaints, sometimes hours later. One undetected 3-hour outage directly cost lost sales.
+**The problem:** the client had no way to know when a server went down except customers complaining. One outage went unnoticed for 3 hours.
 
-### What This Does
-Automatically checks all tagged EC2 instances every 5 minutes and emails an alert the moment one goes down or becomes unhealthy — cutting detection time from hours to minutes, with zero manual checking required.
+**What it does:** checks every tagged EC2 instance every 5 minutes (instance state + CloudWatch status), and emails an alert if one goes down or becomes unhealthy.
 
-### Key Design Decisions
-- **Serverless (AWS Lambda + EventBridge)** instead of a cron job on a dedicated server — no infrastructure to provision or maintain. Cost stays near-zero since Lambda only runs (and is only billed) for the few seconds it takes to check instances every 5 minutes.
-- **Tag-based instance discovery** (`monitor: true`) instead of hardcoded instance IDs — the tool automatically picks up any newly tagged instance, scaling with the client's infrastructure without requiring code changes.
-- **Two health signals, not one** — instance state (stopped/running) *and* CloudWatch's `InstanceStatus`/`SystemStatus` checks. A server can be "running" but still unhealthy underneath, so relying on state alone would miss real problems.
-- **One combined alert email**, with subject-line severity (`ALERT` for down instances, `Warning` for unhealthy-only) — rather than separate emails per severity, which would add complexity the client never asked for.
-- **Fail-fast vs. fail-gracefully** — unrecoverable setup errors (e.g., can't connect to AWS at all) are allowed to crash loudly and immediately. Per-instance check failures are caught and logged, so one bad instance never prevents the rest from being checked.
+**Notes on how it's built:**
+- Runs on AWS Lambda + EventBridge instead of a dedicated server running cron — no server to maintain, and Lambda only costs money for the few seconds it actually runs.
+- Instances are found by an AWS tag (`monitor: true`), not hardcoded IDs, so new servers get picked up automatically.
+- Checks two things per instance (is it stopped? is CloudWatch reporting it healthy?) and combines them into one status: down / healthy / unhealthy.
+- If checking one instance fails (AWS error, timeout, etc.), it's caught and logged instead of crashing the whole run — one bad instance doesn't stop the rest from being checked.
 
 ---
 
 ## Feature 2: Application Log Monitoring
 
-### The Problem
-The client's application logs (`/var/log/myapp/app.log` on each instance) could contain real errors — like failed payment transactions — that never show up as an EC2 health issue. Marcus only found out about one such incident when a customer emailed him.
+**The problem:** the app itself can have real errors (like failed payments) that don't show up as an EC2 health issue at all.
 
-### What This Does
-For each tagged instance, resolves its public IP, connects over SSH, and reads its application log via SFTP — picking up only new content since the last checkpoint. New lines are filtered for anything containing "ERROR" (case-insensitive) and included in the same alert email as the EC2 health checks. An instance that can't be reached — no resolvable IP, a failed SSH connection, or an authentication error — is recorded separately and skipped, rather than stopping the check for every other instance.
+**What it does:** for each tagged instance, gets its IP, connects over SSH, and reads its log file (`/var/log/app.log`) — but only the *new* part since the last check, using a saved byte position (a "checkpoint") so it doesn't re-read the whole file every time. New lines containing "ERROR" get included in the alert email.
 
-### Key Design Decisions
-- **Checkpoint-based reading (byte offset, stored in `checkpoints.json`)** instead of re-reading the whole file every time — the log file is never rotated or archived, so it only grows; re-scanning it fully on every check would get slower over time and re-report the same old errors repeatedly.
-- **One shared checkpoint file, not one per instance** — simpler to manage as the number of monitored instances grows, at the cost of a small, documented risk: if this file is lost or corrupted, the next run re-scans each log from the beginning. Considered a database (SQLite) for this, but chose the simpler file-based approach since the risk is low-severity and easily recoverable — a database would be a reasonable future upgrade, not a requirement for the MVP.
-- **SFTP over `exec_command`** for reading the remote log — SFTP exposes a file-like object supporting `.seek()`/`.read()`/`.tell()`, so the existing checkpoint logic (designed around local `open()` semantics) carried over almost unchanged, instead of needing to diff full-file output on every run.
-- **Two separate failure trackers, not one** — log content errors (`all_error_lines`) and connection/reachability errors (`all_error_message`) are collected independently. A missing IP or failed SSH login is a fundamentally different problem from a log line that says "ERROR," and conflating them made the alerting logic ambiguous during development.
-- **Fail-open per instance, not per run** — an unresolved IP or SSH failure on one instance is caught, recorded, and skipped, so the rest of the fleet is still checked and alerted on in the same run.
-- **`finally`-based connection cleanup** — the SSH/SFTP connection is closed in a `finally` block so it's released whether the read succeeds, fails, or hits an unexpected exception, avoiding leaked connections across repeated checks.
-- **One combined `alert_data` dictionary** passed into `send_alert_email()`, instead of an ever-growing list of function parameters — keeps the alerting function stable as more alert categories (like this one) get added.
-- **Shared `get_tagged_instance_ids()` helper** (`devops/utils.py`), extracted from Feature 1's instance-discovery logic, so both features stay in sync with the same tagging convention without duplicating boto3 filtering code.
+**Notes on how it's built:**
+- Checkpoints are stored in one shared `checkpoints.json` file (`{instance_id: byte_position}`). Considered using a small database (SQLite) instead, but a plain JSON file is simpler and the downside (if it's ever lost, the next run just re-scans from the start) is low-risk for this use case.
+- Reads the file over SFTP, which gives a file-like object I can `.seek()`/`.read()`/`.tell()` on — basically the same as reading a local file, which made this easier to reuse the checkpoint logic I'd already built.
+- If an instance can't be reached (no IP, bad SSH login, etc.), that's tracked *separately* from actual log errors — "couldn't check this" and "found a real error" are different problems and mixing them together made the alert logic confusing.
+- SSH connection is always closed in a `finally` block, so it closes even if something goes wrong mid-check.
+
+---
+
+## Feature 3: API Health Checker
+
+**The problem:** the checkout API went down for ~20 minutes and nobody noticed until customers emailed support.
+
+**What it does:** checks 4 endpoints (`/api/checkout`, `/api/login`, `/api/products`, `/api/cart`) every 5 minutes. Flags an endpoint as **down** if it errors out or fails to respond, or **slow** if it responds but takes 5+ seconds.
+
+**Notes on how it's built:**
+- One function (`check_endpoint`) checks both "did it respond" and "how long did it take" together, and returns one combined result (up/slow/down) — same pattern as the EC2 check.
+- The 5-second "slow" threshold is a parameter with a default, not hardcoded, since the client wasn't even fully sure 5 seconds was the right number.
+- Retries a failed request up to 3 times (waiting a bit longer each time) before actually calling it "down" — a single dropped connection shouldn't trigger a false alarm.
+- Every request has a timeout, so one hung endpoint can't stall the whole check.
+
+---
+
+## Feature 4: S3 Bucket Auditor
+
+**The problem:** none of the other checks say anything about cost or security risk sitting in storage — a public bucket, unencrypted data, or years of old files nobody's cleaning up.
+
+**What it does:** checks every S3 bucket for public access, missing encryption, and no lifecycle policy, and separately flags objects that haven't been touched in 90+ days.
+
+**Notes on how it's built:**
+- Same pattern as Feature 1 — one function checks a single bucket and absorbs its own errors, returning either a list of problems found or `"error"`.
+- AWS actually throws an error when a bucket has *no* policy/encryption/lifecycle rule set up at all (instead of just saying "not public" etc.) — those specific "not configured" errors are treated as a normal finding, not a real failure. Any other unexpected error still gets flagged as an actual error.
+- Listing objects in a bucket only returns up to 1,000 at a time by default, with no warning if there's more — had to use boto3's paginator to make sure large buckets actually get fully checked instead of silently only checking the first page.
+- Old objects are reported as a count ("42 old object(s)"), not a full list of filenames — a bucket with thousands of stale files would make the email unreadable otherwise.
+
+---
+
+## Feature 5: Reporting (JSON/CSV)
+
+**What it does:** after everything runs, saves the same results that went into the alert email as a timestamped `.json` and/or `.csv` file (`report_20260917_143022.json`), so there's a record beyond just the email.
+
+**Notes on how it's built:**
+- A new file gets created each run rather than appending to one growing file — simpler, and avoids one big file getting messy or corrupted over time.
+- CSV output uses Python's `csv` module properly (not just dumping JSON text into a `.csv` file, which I did by mistake at first) — each line becomes its own row.
+
+---
+
+## CLI Interface
+
+The tool can be run from the command line with flags instead of always checking everything:
+
+```bash
+python main.py --check ec2
+python main.py --check logs
+python main.py --check api
+python main.py --check s3
+python main.py --check all          # default
+python main.py --check ec2 --format json   # only save JSON, not CSV
+```
+
+`--check` and `--format` are separate flags on purpose — one controls *what* gets checked, the other controls *how* results get saved. I originally tried cramming both into one flag, which meant picking `--check json` would run zero actual checks and produce an empty, useless report.
+
+---
+
+## One Combined Alert System
+
+All four checking features report into a single dictionary passed to `send_alert_email()`, instead of the function needing a new parameter every time a feature gets added:
+
+```python
+alert_data = {
+    "down": [...],
+    "unhealthy": [...],
+    "instance_errors": [...],
+    "log_errors": {...},
+    "connection_errors": {...},
+    "api_errors": {...},
+    "bucket_object_check": {...}
+}
+```
+
+One email only gets sent if at least one of these actually has something in it; the subject line says `ALERT` if any EC2 instance is down, otherwise `Warning`.
 
 ---
 
 ## Tech Stack
 
 - Python 3
-- `boto3` (AWS SDK)
-- `paramiko` (SSH/SFTP — remote log file access)
+- `boto3` (AWS SDK — EC2 and S3)
+- `paramiko` (SSH/SFTP for reading logs)
+- `requests` (HTTP calls for the API checker)
 - AWS Lambda + EventBridge (scheduling)
-- AWS IAM (least-privilege `AmazonEC2ReadOnlyAccess`)
-- `smtplib` (email alerts)
-- `python-dotenv` (local credential management)
+- AWS IAM (least-privilege read-only access)
+- `smtplib` (sending the alert email)
+- `python-dotenv` (loading credentials locally)
+- `argparse` (CLI)
 - `pytest` + `unittest.mock` (testing)
 
 ## Setup
 
-See [SETUP.md](./SETUP.md) for full instructions on configuring AWS credentials, Gmail app passwords, SSH keys, and environment variables.
+See [SETUP.md](./SETUP.md) for AWS credentials, Gmail app password, SSH key, and environment variable setup.
 
-Quick start (local):
 ```bash
 python -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env       # then fill in your real values
+cp .env.example .env       # fill in real values
 python main.py
 ```
 
-Required environment variables:
-- `ALERT_EMAIL_FROM`, `ALERT_EMAIL_PASSWORD`, `ALERT_EMAIL_TO`
-- `SSH_USERNAME`, `SSH_KEY_PATH`
+Required environment variables: `ALERT_EMAIL_FROM`, `ALERT_EMAIL_PASSWORD`, `ALERT_EMAIL_TO`, `SSH_USERNAME`, `SSH_KEY_PATH`
 
 ## Testing
 
-This project is tested entirely with mocked AWS, email, filesystem, and SSH/SFTP calls — no real AWS credentials, live SSH access, or running infrastructure required to run the test suite.
+Everything is tested with mocked AWS, SSH, HTTP, and file calls — no real AWS account, SSH access, or live servers needed to run the tests.
 
 ```bash
 pip install pytest
 pytest -v
 ```
 
-**Coverage (15 tests across 3 files):**
-- `tests/test_ec2_monitoring.py` — `get_instance_status()` (down/healthy/unhealthy/error) and `check_all_instances()` sorting logic
-- `tests/test_log_monitoring.py` — error-line filtering; checkpoint read/write (found, default, missing-file); SSH/SFTP-based log reading including a simulated authentication failure; and full orchestration via `check_all_logs()`, including the case where an instance's IP can't be resolved
-- `tests/test_utils.py` — shared tagged-instance lookup
+**35 tests across 5 files:**
+- `test_ec2_monitoring.py` — instance status logic (down/healthy/unhealthy/error) and the sorting across multiple instances
+- `test_log_monitoring.py` — error filtering, checkpoint read/write, SSH log reading (including a simulated auth failure), and the full log-checking flow including an instance with no IP
+- `test_api_monitoring.py` — up/slow/down states, retries (both giving up after 3 tries and succeeding on a retry), and the filtering logic
+- `test_s3_monitoring.py` — each bucket check (public/encryption/lifecycle), the "not configured" vs. "real error" distinction, pagination across multiple pages of objects, and the overall bucket orchestration
+- `test_utils.py` — the shared tagged-instance lookup
+
+(Reporting doesn't have tests yet — it's simple file-writing logic and was deprioritized given time constraints.)
 
 ## Deployment (AWS Lambda)
 
-1. Create a Lambda function with an execution role that has `AmazonEC2ReadOnlyAccess`
-2. Set environment variables (`ALERT_EMAIL_FROM`, `ALERT_EMAIL_PASSWORD`, `ALERT_EMAIL_TO`, `SSH_USERNAME`, `SSH_KEY_PATH`) in the Lambda console
-3. Upload `lambda_function.py` along with the `devops/` package, and set the handler to `lambda_function.lambda_handler`
-4. Add an EventBridge trigger with schedule expression `rate(5 minutes)`
+1. Create a Lambda function with a role that has EC2 read-only and S3 read access
+2. Set the required environment variables in the Lambda console
+3. Upload `lambda_function.py` plus the `devops/` folder, set the handler to `lambda_function.lambda_handler`
+4. Add an EventBridge trigger set to `rate(5 minutes)`
 
-**Note:** SSH access from Lambda requires the monitored instances to be reachable from wherever Lambda runs (VPC networking/security groups) and the private key to be available to the function (e.g., via a securely mounted secret, not bundled in code).
+**Note:** for SSH to actually work from Lambda, the instances need to be reachable from Lambda's network (VPC/security groups), and the SSH key needs to be available to the function some secure way — not just bundled into the code.
 
-## Lessons Learned
+## Things I'd still improve
 
-- Mocking (`unittest.mock.patch`) makes it possible to fully test AWS- and SSH-dependent logic without live infrastructure, cost, or flakiness.
-- Small architectural decisions (like separating "check one instance" from "check all instances") ripple through a codebase — adding a third status category required updates across three functions, not just one.
-- Real client requirements are rarely fully specified upfront; the "5-minute vs. hourly" interval decision changed once actual Lambda cost data was considered instead of an assumption.
-- Two categories of failure need to be tracked separately, not merged into one bucket: content the check finds (e.g. an ERROR line in a log) versus the check itself failing to run (e.g. an instance being unreachable over SSH). Conflating them into a single error collection made the alerting logic ambiguous — the fix was two independent dictionaries, one per failure type, mirroring how EC2 health checks already separated "unhealthy" from "errored."
+- Configurable "how long down before alerting" threshold, to cut down on noise from short blips
+- Maybe move checkpoints to a small database instead of a JSON file if this ever needs to scale to a lot more instances
+- Proper SSH host key checking (currently auto-accepts, which is convenient but not great security practice)
+- Tests for the reporting module
+- CI (GitHub Actions) to run the test suite automatically on every push
 
-## Future Improvements
+## What I learned building this
 
-- API/website uptime monitoring (confirming the app responds to users, not just that the server is running)
-- Configurable alert thresholds (e.g., only alert if down for more than N minutes, to reduce noise from brief blips)
-- Checkpoint storage upgrade (e.g., SQLite) if the JSON file's corruption risk becomes an actual issue at scale
-- Host key verification for SSH (currently uses `AutoAddPolicy`, which trades stronger security for automation convenience — worth tightening before production use)
-- Serialize connection errors as plain strings/structured data rather than raw exception objects, ahead of the planned Reporting feature (JSON/CSV export) and any future inclusion in the alert email body
+- Mocking (`unittest.mock`) lets you fully test code that talks to AWS/SSH/HTTP without needing any of those things to actually be running — makes tests fast and doesn't cost anything.
+- Small design decisions ripple outward more than expected — adding one new error category to track meant updating three or four different functions, not just one.
+- Client requirements are rarely complete on the first message — almost every feature needed a follow-up question or two before I actually understood what was being asked.
+- Estimating how long something will take is a real skill on its own, separate from being able to build it — and early on, a lot of "build time" is actually "learning time," which is worth being honest about instead of pretending otherwise.
+- Cloud APIs often cap what they return per call (S3 only returns 1,000 objects at a time) and won't necessarily warn you — you have to know to check for that.

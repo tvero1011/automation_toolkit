@@ -1,31 +1,11 @@
-import smtplib
-import os
-from email.mime.text import MIMEText
+import json
+import csv
+from datetime import datetime
 
-def send_alert_email(alert_data):
+
+def save_json(alert_data):
     if not alert_data.get("down") and not alert_data.get("unhealthy") and not alert_data.get("instance_errors") and not alert_data.get("log_errors") and not alert_data.get("api_errors") and not alert_data.get("connection_errors") and not alert_data.get("bucket_object_check"):
         return
-
-    subject_parts = []
-
-    if alert_data.get("down"):
-        subject_parts.append(f"{len(alert_data.get('down'))} instance(s) down")
-    if alert_data.get("unhealthy"):
-        subject_parts.append(f"{len(alert_data.get('unhealthy'))} instance(s) unhealthy")
-    if alert_data.get("instance_errors"):
-        subject_parts.append(f"{len(alert_data.get('instance_errors'))} instance(s) with errors")
-    if alert_data.get("log_errors"):
-        error_count = sum(len(errors) for errors in alert_data.get("log_errors").values())
-        subject_parts.append(f"{error_count} log error(s)")
-    if alert_data.get("api_errors"):
-        subject_parts.append(f"{len(alert_data.get('api_errors'))} API endpoint(s) with issues")
-    if alert_data.get("connection_errors"):
-        subject_parts.append(f"{len(alert_data.get('connection_errors'))} connection error(s)")
-    if alert_data.get("bucket_object_check"):
-        subject_parts.append(f"{len(alert_data.get('bucket_object_check'))} bucket(s) with issues")
-
-    presub = "ALERT: " if alert_data.get("down") else "Warning: "
-    subject = f"{presub}{','.join(subject_parts)}"
 
     body_lines = []
     if alert_data.get("down"):
@@ -56,11 +36,51 @@ def send_alert_email(alert_data):
             body_lines.append(f" {bucket_name}:")
             body_lines.extend(issues)
 
-    msg = MIMEText("\n".join(body_lines))
-    msg["Subject"] = subject
-    msg["From"] = os.environ["ALERT_EMAIL_FROM"]
-    msg["To"] = os.environ["ALERT_EMAIL_TO"]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"report_{timestamp}.json"       
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(os.environ["ALERT_EMAIL_FROM"], os.environ["ALERT_EMAIL_PASSWORD"])
-        server.send_message(msg)
+    with open(filename, "w") as f:
+        json.dump(body_lines, f)
+
+
+def save_csv(alert_data):
+    if not alert_data.get("down") and not alert_data.get("unhealthy") and not alert_data.get("instance_errors") and not alert_data.get("log_errors") and not alert_data.get("api_errors") and not alert_data.get("connection_errors") and not alert_data.get("bucket_object_check"):
+        return
+
+    body_lines = []
+
+    if alert_data.get("down"):
+        body_lines.append("Down instances:")
+        body_lines.extend(alert_data.get("down"))
+    if alert_data.get("unhealthy"):
+        body_lines.append("Unhealthy:")
+        body_lines.extend(alert_data.get("unhealthy"))
+    if alert_data.get("instance_errors"):
+        body_lines.append("Instances with errors:")
+        body_lines.extend(alert_data.get("instance_errors"))
+    if alert_data.get("log_errors"):
+        body_lines.append("Log errors:")
+        for instance_id, error_lines in alert_data.get("log_errors").items():
+            body_lines.append(f" {instance_id}:")
+            body_lines.extend(error_lines)
+    if alert_data.get("api_errors"):
+        body_lines.append("API endpoint issues:")
+        for endpoint, status in alert_data.get("api_errors").items():
+            body_lines.append(f" {endpoint}: {status}")
+    if alert_data.get("connection_errors"):
+        body_lines.append("Connection errors:")
+        for instance_id, error in alert_data.get("connection_errors").items():
+            body_lines.append(f" {instance_id}: {error}")
+    if alert_data.get("bucket_object_check"):
+        body_lines.append("S3 bucket issues:")
+        for bucket_name, issues in alert_data.get("bucket_object_check").items():
+            body_lines.append(f" {bucket_name}:")
+            body_lines.extend(issues)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"report_{timestamp}.csv"       
+
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        for line in body_lines:
+            writer.writerow([line])

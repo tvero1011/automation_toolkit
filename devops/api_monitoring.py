@@ -3,13 +3,23 @@ import time
 
 def check_endpoint(url, latency=5):
     try:
-        start_time = time.time()
-        response = requests.get(url)
-        end_time = time.time()
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                start_time = time.time()
+                response = requests.get(url, timeout=15)
+                end_time = time.time()
+                break
+            except requests.exceptions.RequestException:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  
+                else:
+                    return "down"
+                
         elapsed = end_time - start_time
 
         status_code = response.status_code
-
         if elapsed >= latency and status_code < 400:
             return "slow"
 

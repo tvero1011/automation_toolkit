@@ -1,3 +1,4 @@
+import requests
 from unittest.mock import patch, MagicMock
 from devops.api_monitoring import check_endpoint, check_all_endpoints
 
@@ -5,8 +6,8 @@ def test_check_endpoint_returns_up():
     fake_response = MagicMock()
     fake_response.status_code = 200
 
-    with patch("devops.api_monitoring.requests.get", return_value=fake_response), patch("devops.api_monitoring.time.time", side_effect=[100, 101]
-    ):
+    with patch("devops.api_monitoring.requests.get", return_value=fake_response), \
+         patch("devops.api_monitoring.time.time", side_effect=[100, 101]):
         result = check_endpoint("https://example.com/api/checkout")
 
     assert result == "up"
@@ -15,8 +16,8 @@ def test_check_endpoint_returns_slow_when_latency_is_high():
     fake_response = MagicMock()
     fake_response.status_code = 200
 
-    with patch("devops.api_monitoring.requests.get", return_value=fake_response), patch("devops.api_monitoring.time.time", side_effect=[100, 106]
-    ):
+    with patch("devops.api_monitoring.requests.get", return_value=fake_response), \
+         patch("devops.api_monitoring.time.time", side_effect=[100, 106]):
         result = check_endpoint("https://example.com/api/checkout")
 
     assert result == "slow"
@@ -36,6 +37,25 @@ def test_check_endpoint_returns_down_on_exception():
 
     assert result == "down"
 
+def test_check_endpoint_returns_down_after_exhausting_retries():
+    with patch("devops.api_monitoring.requests.get", side_effect=requests.exceptions.Timeout()), \
+         patch("devops.api_monitoring.time.sleep") as mock_sleep:
+        result = check_endpoint("https://example.com/api/checkout")
+
+    assert result == "down"
+    assert mock_sleep.call_count == 2
+
+def test_check_endpoint_succeeds_on_second_attempt():
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+
+    with patch("devops.api_monitoring.requests.get", side_effect=[requests.exceptions.Timeout(), fake_response]), \
+         patch("devops.api_monitoring.time.sleep") as mock_sleep, \
+         patch("devops.api_monitoring.time.time", side_effect=[100, 101,102]):
+        result = check_endpoint("https://example.com/api/checkout")
+
+    assert result == "up"
+    assert mock_sleep.call_count == 1
 
 def test_check_all_endpoints_filters_only_problems():
     with patch("devops.api_monitoring.check_endpoint") as mock_check:

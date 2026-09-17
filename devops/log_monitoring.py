@@ -11,7 +11,6 @@ client = paramiko.SSHClient()
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
 
-
 def filter_error_lines(log_lines):
     # takes raw lines, returns only the ones containing "ERROR"
     error_lines = []
