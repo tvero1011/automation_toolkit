@@ -16,9 +16,10 @@ def test_check_bucket_flags_public_bucket():
         mock_s3.get_bucket_encryption.return_value = {}
         mock_s3.get_bucket_lifecycle_configuration.return_value = {}
 
-        result = check_bucket("my-bucket")
+        ok, issues = check_bucket("my-bucket")
 
-    assert result == ["public"]
+    assert ok is True
+    assert issues == ["public"]
 
 
 def test_check_bucket_no_policy_not_flagged():
@@ -27,18 +28,20 @@ def test_check_bucket_no_policy_not_flagged():
         mock_s3.get_bucket_encryption.return_value = {}
         mock_s3.get_bucket_lifecycle_configuration.return_value = {}
 
-        result = check_bucket("my-bucket")
+        ok, issues = check_bucket("my-bucket")
 
-    assert result == []
+    assert ok is True
+    assert issues == []
 
 
-def test_check_bucket_policy_unexpected_error_returns_error():
+def test_check_bucket_policy_unexpected_error_returns_not_ok():
     with patch("devops.s3_monitoring.s3") as mock_s3:
         mock_s3.get_bucket_policy_status.side_effect = make_client_error("AccessDenied")
 
-        result = check_bucket("my-bucket")
+        ok, issues = check_bucket("my-bucket")
 
-    assert result == "error"
+    assert ok is False
+    assert issues == []
 
 
 def test_check_bucket_flags_no_encryption():
@@ -49,19 +52,21 @@ def test_check_bucket_flags_no_encryption():
         )
         mock_s3.get_bucket_lifecycle_configuration.return_value = {}
 
-        result = check_bucket("my-bucket")
+        ok, issues = check_bucket("my-bucket")
 
-    assert result == ["no encryption"]
+    assert ok is True
+    assert issues == ["no encryption"]
 
 
-def test_check_bucket_encryption_unexpected_error_returns_error():
+def test_check_bucket_encryption_unexpected_error_returns_not_ok():
     with patch("devops.s3_monitoring.s3") as mock_s3:
         mock_s3.get_bucket_policy_status.return_value = {"PolicyStatus": {"IsPublic": False}}
         mock_s3.get_bucket_encryption.side_effect = make_client_error("AccessDenied")
 
-        result = check_bucket("my-bucket")
+        ok, issues = check_bucket("my-bucket")
 
-    assert result == "error"
+    assert ok is False
+    assert issues == []
 
 
 def test_check_bucket_flags_no_lifecycle():
@@ -72,20 +77,22 @@ def test_check_bucket_flags_no_lifecycle():
             "NoSuchLifecycleConfiguration"
         )
 
-        result = check_bucket("my-bucket")
+        ok, issues = check_bucket("my-bucket")
 
-    assert result == ["no lifecycle policy"]
+    assert ok is True
+    assert issues == ["no lifecycle policy"]
 
 
-def test_check_bucket_lifecycle_unexpected_error_returns_error():
+def test_check_bucket_lifecycle_unexpected_error_returns_not_ok():
     with patch("devops.s3_monitoring.s3") as mock_s3:
         mock_s3.get_bucket_policy_status.return_value = {"PolicyStatus": {"IsPublic": False}}
         mock_s3.get_bucket_encryption.return_value = {}
         mock_s3.get_bucket_lifecycle_configuration.side_effect = make_client_error("AccessDenied")
 
-        result = check_bucket("my-bucket")
+        ok, issues = check_bucket("my-bucket")
 
-    assert result == "error"
+    assert ok is False
+    assert issues == []
 
 
 def test_check_bucket_clean_bucket_returns_empty_list():
@@ -94,9 +101,10 @@ def test_check_bucket_clean_bucket_returns_empty_list():
         mock_s3.get_bucket_encryption.return_value = {}
         mock_s3.get_bucket_lifecycle_configuration.return_value = {}
 
-        result = check_bucket("my-bucket")
+        ok, issues = check_bucket("my-bucket")
 
-    assert result == []
+    assert ok is True
+    assert issues == []
 
 
 # --- check_objects (pagination) ---
@@ -133,7 +141,7 @@ def test_check_objects_returns_empty_on_error():
 def test_check_all_buckets_skips_object_check_on_bucket_error():
     with patch("devops.s3_monitoring.s3") as mock_s3, patch("devops.s3_monitoring.check_bucket") as mock_check_bucket, patch("devops.s3_monitoring.check_objects") as mock_check_objects:
         mock_s3.list_buckets.return_value = {"Buckets": [{"Name": "bad-bucket"}]}
-        mock_check_bucket.return_value = "error"
+        mock_check_bucket.return_value = (False, [])
 
         result = check_all_buckets()
 
@@ -144,7 +152,7 @@ def test_check_all_buckets_skips_object_check_on_bucket_error():
 def test_check_all_buckets_combines_issues_and_old_objects():
     with patch("devops.s3_monitoring.s3") as mock_s3, patch("devops.s3_monitoring.check_bucket") as mock_check_bucket, patch("devops.s3_monitoring.check_objects") as mock_check_objects:
         mock_s3.list_buckets.return_value = {"Buckets": [{"Name": "my-bucket"}]}
-        mock_check_bucket.return_value = ["public"]
+        mock_check_bucket.return_value = (True, ["public"])
         mock_check_objects.return_value = ["old1.txt", "old2.txt"]
 
         result = check_all_buckets()
@@ -155,7 +163,7 @@ def test_check_all_buckets_combines_issues_and_old_objects():
 def test_check_all_buckets_clean_bucket_not_included():
     with patch("devops.s3_monitoring.s3") as mock_s3, patch("devops.s3_monitoring.check_bucket") as mock_check_bucket, patch("devops.s3_monitoring.check_objects") as mock_check_objects:
         mock_s3.list_buckets.return_value = {"Buckets": [{"Name": "clean-bucket"}]}
-        mock_check_bucket.return_value = []
+        mock_check_bucket.return_value = (True, [])
         mock_check_objects.return_value = []
 
         result = check_all_buckets()

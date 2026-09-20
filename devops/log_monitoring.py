@@ -1,42 +1,82 @@
 import socket
+import re
 
 import paramiko
 import json
 import os
 from devops.utils import get_tagged_instance_ids
 from devops.utils import get_instance_ip
+from devops.utils import get_storage_dir
 
 
 client = paramiko.SSHClient()
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
+ERROR_PATTERN = re.compile(r"\berror\b", re.IGNORECASE)
+
+# If set, checkpoints persist to S3 instead of local disk. This matters in
+# Lambda specifically: /tmp is writable, but it's wiped whenever Lambda
+# recycles the execution environment, so a local file alone doesn't
+# actually survive between runs the way it does when running this locally
+# as a long-lived CLI tool. S3 gives it a durable home either way.
+CHECKPOINT_S3_BUCKET = os.environ.get("CHECKPOINT_S3_BUCKET")
+CHECKPOINT_S3_KEY = os.environ.get("CHECKPOINT_S3_KEY", "checkpoints.json")
+
+
+def _checkpoint_path():
+    return os.path.join(get_storage_dir(), "checkpoints.json")
+
+
+def _load_checkpoints():
+    if CHECKPOINT_S3_BUCKET:
+        import boto3
+        s3 = boto3.client("s3")
+        try:
+            obj = s3.get_object(Bucket=CHECKPOINT_S3_BUCKET, Key=CHECKPOINT_S3_KEY)
+            return json.loads(obj["Body"].read())
+        except s3.exceptions.NoSuchKey:
+            return {}
+
+    try:
+        with open(_checkpoint_path(), "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def _save_checkpoints(checkpoints):
+    if CHECKPOINT_S3_BUCKET:
+        import boto3
+        s3 = boto3.client("s3")
+        s3.put_object(
+            Bucket=CHECKPOINT_S3_BUCKET,
+            Key=CHECKPOINT_S3_KEY,
+            Body=json.dumps(checkpoints).encode("utf-8"),
+        )
+        return
+
+    with open(_checkpoint_path(), "w") as f:
+        json.dump(checkpoints, f)
+
 
 def filter_error_lines(log_lines):
-    # takes raw lines, returns only the ones containing "ERROR"
+    # takes raw lines, returns only the ones containing the WORD "error"
+    # (word-boundary match, not substring -- a plain "error" in line.lower()
+    # would false-positive on things like "terrorFlag" since "error" is a
+    # substring of "terror")
     error_lines = []
     for line in log_lines:
-        if "error" in line.lower():
+        if ERROR_PATTERN.search(line):
             error_lines.append(line)
     return error_lines
 
 def get_checkpoint(instance_id):
-    try:
-        with open("checkpoints.json", "r") as f:
-            checkpoints = json.load(f)
-            return checkpoints.get(instance_id, 0)
-    except FileNotFoundError:
-        return 0
-          
-def save_checkpoint(instance_id, position): 
-    try:
-        with open("checkpoints.json", "r") as f:
-            checkpoints = json.load(f)
-    except FileNotFoundError:
-        checkpoints = {}
+    return _load_checkpoints().get(instance_id, 0)
 
+def save_checkpoint(instance_id, position):
+    checkpoints = _load_checkpoints()
     checkpoints[instance_id] = position
-    with open("checkpoints.json", "w") as f:
-        json.dump(checkpoints, f)
+    _save_checkpoints(checkpoints)
 
 def read_new_log_lines(instance_ip, checkpoint_position):
     try:

@@ -19,6 +19,19 @@ def test_filter_error_lines_finds_all_case_variants():
         "2026-09-06 10:17:02 error database connection lost"
     ]
 
+def test_filter_error_lines_ignores_substring_false_positives():
+    # "terror" contains the letters "error" as a substring, but is not the
+    # word "error" -- a plain `"error" in line.lower()` check would
+    # incorrectly flag this line.
+    fake_log_lines = [
+        "2026-09-06 10:15:23 INFO terrorFlag reset to false",
+        "2026-09-06 10:16:01 ERROR Payment gateway timeout",
+    ]
+
+    result = filter_error_lines(fake_log_lines)
+
+    assert result == ["2026-09-06 10:16:01 ERROR Payment gateway timeout"]
+
 def test_get_checkpoint_returns_saved_value():
     fake_file_content = json.dumps(
         {

@@ -5,6 +5,11 @@ from datetime import datetime, timedelta, timezone
 s3 = boto3.client('s3')
 
 def check_bucket(bucket_name):
+    """Returns (ok, issues). ok=False means the check itself failed (e.g.
+    AccessDenied) -- distinct from ok=True with an empty issues list, which
+    means the check succeeded and found nothing wrong. Previously this
+    returned either a list or the literal string "error", which forced
+    every caller to special-case a string against a list."""
     issues = []
 
     try:
@@ -17,7 +22,7 @@ def check_bucket(bucket_name):
             pass  # no policy = not public via policy, nothing to flag
         else:
             print(f"Error checking bucket {bucket_name}: {e}")
-            return "error"
+            return False, []
 
     try:
         s3.get_bucket_encryption(Bucket=bucket_name)
@@ -26,7 +31,7 @@ def check_bucket(bucket_name):
             issues.append("no encryption")
         else:
             print(f"Error checking bucket {bucket_name}: {e}")
-            return "error"
+            return False, []
 
     try:
         s3.get_bucket_lifecycle_configuration(Bucket=bucket_name)
@@ -35,9 +40,9 @@ def check_bucket(bucket_name):
             issues.append("no lifecycle policy")
         else:
             print(f"Error checking bucket {bucket_name}: {e}")
-            return "error"
-    
-    return issues
+            return False, []
+
+    return True, issues
 
 def check_objects(bucket_name):
     old_objects = []
@@ -59,9 +64,9 @@ def check_all_buckets():
 
     for bucket in response['Buckets']:
         bucket_name = bucket['Name']
-        issues = check_bucket(bucket_name)
+        ok, issues = check_bucket(bucket_name)
 
-        if issues == "error":
+        if not ok:
             bucket_issues[bucket_name] = ["error checking bucket"]
             continue
 
