@@ -87,6 +87,8 @@ def read_new_log_lines(instance_ip, checkpoint_position):
         with sftp.open("/var/log/app.log", "r") as f:
             f.seek(checkpoint_position)
             new_content = f.read()
+            if isinstance(new_content, bytes):
+                new_content = new_content.decode("utf-8", errors="replace")
             new_lines = new_content.splitlines()
             new_position = f.tell()
             return new_lines, new_position, None

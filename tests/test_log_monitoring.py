@@ -150,3 +150,23 @@ def test_check_all_logs_skips_instance_with_no_ip():
     assert all_error_message == {"i-1001": "cant get ip address"}
     mock_read_lines.assert_not_called()
     mock_save.assert_not_called()
+
+def test_read_new_log_lines_decodes_bytes():
+    fake_file = MagicMock()
+    fake_file.read.return_value = b"ERROR something broke\nINFO all fine\n"
+    fake_file.tell.return_value = 500
+    fake_file.__enter__.return_value = fake_file
+    fake_file.__exit__.return_value = False
+
+    fake_sftp = MagicMock()
+    fake_sftp.open.return_value = fake_file
+
+    with patch("devops.log_monitoring.client") as fake_client, \
+         patch("devops.log_monitoring.os.environ", {"SSH_USERNAME": "user", "SSH_KEY_PATH": "/fake/key"}):
+        fake_client.open_sftp.return_value = fake_sftp
+
+        new_lines, new_position, error = read_new_log_lines("10.0.0.5", 200)
+
+    assert new_lines == ["ERROR something broke", "INFO all fine"]
+    assert new_position == 500
+    assert error is None
