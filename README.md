@@ -4,7 +4,7 @@ A small AWS automation tool I built to practice real-world DevOps/cloud skills. 
 
 I built this by simulating real client requests (not from a tutorial), one feature at a time, learning the Python/AWS concepts I needed as each feature actually required them.
 
-**Status:** tested end to end on 20 October 2026 against a disposable AWS test environment (created and destroyed with Terraform). Screenshots and captions are in [`docs/proof/`](./docs/proof/captions.md). It was run from my laptop; the Lambda deployment below is the design target and has not been deployed yet.
+**Status:** tested end to end on 20 October 2026 against a disposable AWS test environment (created with Terraform and destroyed the same day; see screenshot 10). Nothing is running in AWS now. Screenshots and captions are in [`docs/proof/`](./docs/proof/captions.md). It was run from my laptop; the Lambda deployment below is the design target and has not been deployed yet.
 
 ## Architecture
 
@@ -41,6 +41,7 @@ I ran every check against real AWS, using a throwaway test stack (one tagged EC2
 | EC2 health | `ALERT: 1 instance(s) down` after stopping the instance | [06](./docs/proof/06-email-instance-down.png) |
 | Full run | One combined email plus JSON/CSV reports | [07](./docs/proof/07-email-full-report.png), [08](./docs/proof/08-report-files.png) |
 | Tests | 44 passed | [09](./docs/proof/09-pytest-passing.png) |
+| Teardown | `terraform destroy`: 7 resources destroyed | [10](./docs/proof/10-destroy-all-resources.png) |
 
 ![Combined alert email from a full run](./docs/proof/07-email-full-report.png)
 
@@ -221,7 +222,9 @@ terraform apply -var="my_ip_cidr=YOUR.IP.HERE/32"
 terraform destroy -var="my_ip_cidr=YOUR.IP.HERE/32"
 ```
 
-It costs roughly a cent per hour while running and is destroyed the same day. See `toolkit-test-infra/RUNBOOK.md` for the full test sequence.
+It costs roughly a cent per hour while running and is destroyed the same day.
+
+The proof sequence I ran: `--check ec2` (silent), `--check logs` (email), `--check logs` again (silent, checkpoint works), `--check s3`, `--check api`, stop the instance and run `--check ec2` (ALERT email), delete `checkpoints.json` and run everything once, then `pytest -v` and `terraform destroy`. See [SETUP.md](./SETUP.md) section 6 for the environment steps.
 
 ## Deployment (AWS Lambda)
 
@@ -229,7 +232,7 @@ Not deployed yet. This is the plan:
 
 1. Build the package with Linux wheels for `paramiko` and `requests` (they are not in the Lambda runtime), and add `lambda_function.py` plus the `devops/` folder:
    `pip install paramiko requests --platform manylinux2014_x86_64 --only-binary=:all: --target package`
-2. Create the Lambda function (handler `lambda_function.lambda_handler`, timeout 60 seconds, 256 MB) with a role that has EC2 read-only and S3 read access.
+2. Create the Lambda function (handler `lambda_function.lambda_handler`, timeout 5 minutes, 256 MB; the API check alone can take about 48 seconds per endpoint in the worst case, roughly 3 minutes for all four, so 60 seconds is too short) with a role that has EC2 read-only and S3 read access.
 3. Set the alert email environment variables in the Lambda console.
 4. Add EventBridge rules, one per check, with a constant input such as `{"check": "s3"}`, on `rate(5 minutes)`.
 
@@ -243,6 +246,8 @@ Not deployed yet. This is the plan:
 - Maybe move checkpoints to a small database instead of a JSON file if this ever needs to scale to a lot more instances
 - Proper SSH host key checking (currently auto-accepts, which is convenient but not great security practice)
 - Tests for the reporting module
+- Save the checkpoint only after the email is sent. Today a failed email still moves the checkpoint, so those log errors are not reported again
+- Handle log rotation (reset the checkpoint when the file shrinks)
 - CI (GitHub Actions) to run the test suite automatically on every push
 
 ## What I learned building this

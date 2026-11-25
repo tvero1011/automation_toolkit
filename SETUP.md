@@ -159,4 +159,4 @@ Wait about 5 minutes, run the toolkit from the project folder with the venv acti
 terraform destroy -var="my_ip_cidr=YOUR.IP.HERE/32"
 ```
 
-See `toolkit-test-infra/RUNBOOK.md` for the full proof sequence. Terraform is a separate program, so it does not run inside `.venv` and does not need the venv activated.
+The full proof sequence is listed in the main README. Terraform is a separate program, so it does not run inside `.venv` and does not need the venv activated.
