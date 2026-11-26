@@ -238,17 +238,19 @@ Not deployed yet. This is the plan:
 
 **Limit:** the `ec2`, `s3` and `api` checks work from Lambda. The SSH log check does not, unless the function runs in a VPC that can reach the instances (which adds NAT cost) and the key is stored securely. I run the log check locally. Pushing logs to CloudWatch Logs instead of pulling them over SSH would be the better long-term design.
 
-## Things I'd still improve
+## Known limitations
 
-- Make the API base URL and endpoint list configurable instead of hardcoded
-- Configurable "how long down before alerting" threshold, to cut down on noise from short blips
-- Send application logs to CloudWatch Logs instead of reading them over SSH, so the log check can run in Lambda
-- Maybe move checkpoints to a small database instead of a JSON file if this ever needs to scale to a lot more instances
-- Proper SSH host key checking (currently auto-accepts, which is convenient but not great security practice)
-- Tests for the reporting module
-- Save the checkpoint only after the email is sent. Today a failed email still moves the checkpoint, so those log errors are not reported again
-- Handle log rotation (reset the checkpoint when the file shrinks)
-- CI (GitHub Actions) to run the test suite automatically on every push
+- **Log check reliability:** the checkpoint moves even if the alert email fails, so those log errors are not reported again. Log rotation is not handled (the checkpoint is not reset when the file shrinks), and checkpoints live in a JSON file, which is fine for a few instances but not for many.
+- **Log check security and reach:** SSH host keys are auto-accepted (convenient, but not good practice). The log check reads files over SSH, so it cannot run in Lambda without a VPC and NAT.
+- **Configuration:** the API base URL and endpoint list are hardcoded, and there is no "how long down before alerting" threshold, so short blips can cause noise.
+- **Testing and delivery:** the reporting module has no tests, there is no CI, and the Lambda deployment is a design only (the tool has been run from my laptop).
+
+## Future improvements
+
+1. **Log check:** save the checkpoint only after the email is sent, reset it when the file shrinks, and send application logs to CloudWatch Logs instead of reading them over SSH, so the check can run in Lambda. Move checkpoints to a small database only if the tool needs to scale.
+2. **Security:** add proper SSH host key checking if SSH stays in use.
+3. **Configuration:** make the API base URL and endpoint list configurable, and add a down-time threshold before alerting.
+4. **Quality and delivery:** add tests for the reporting module, run the test suite with GitHub Actions on every push, and deploy to Lambda.
 
 ## What I learned building this
 
@@ -258,3 +260,7 @@ Not deployed yet. This is the plan:
 - Estimating how long something will take is a real skill on its own, separate from being able to build it, and early on a lot of "build time" is actually "learning time," which is worth being honest about instead of pretending otherwise.
 - Cloud APIs often cap what they return per call (S3 only returns 1,000 objects at a time) and won't necessarily warn you. You have to know to check for that.
 - Testing against real infrastructure is cheap when it's code: one `terraform apply` to create the test environment and one `terraform destroy` to remove it.
+
+## Author
+
+Built by [tvero1011](https://github.com/tvero1011) as a cloud and DevOps portfolio project.
